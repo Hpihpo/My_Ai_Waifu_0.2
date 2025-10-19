@@ -1,0 +1,324 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Meseca — Voice AI</title>
+    <style>
+        :root {
+            --bg: #0f1724;
+            --card: #0b1220;
+            --accent: #7dd3fc;
+            --muted: #9aa5b1;
+            --glass: rgba(255,255,255,0.04);
+        }
+
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, Arial;
+            background: linear-gradient(180deg,#071025 0%, #091025 100%);
+            color: #e6eef6;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 28px;
+        }
+
+        .app {
+            width: 100%;
+            max-width: 900px;
+            background: var(--card);
+            border-radius: 12px;
+            padding: 18px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            color: var(--accent);
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 12px;
+        }
+
+        .input {
+            flex: 1;
+            display: flex;
+            gap: 8px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: var(--glass);
+            color: inherit;
+        }
+
+        button {
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: linear-gradient(90deg,#0369a1,#0891b2);
+            color: white;
+            font-weight: 600;
+        }
+
+            button.secondary {
+                background: transparent;
+                border: 1px solid rgba(255,255,255,0.06);
+                color: var(--muted);
+            }
+
+        #chat {
+            margin-top: 14px;
+            background: rgba(0,0,0,0.15);
+            border-radius: 8px;
+            padding: 12px;
+            max-height: 420px;
+            overflow: auto;
+        }
+
+        .msg {
+            margin: 8px 0;
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+        }
+
+        .bubble {
+            padding: 8px 12px;
+            border-radius: 10px;
+            max-width: 80%;
+        }
+
+        .user .bubble {
+            background: linear-gradient(90deg,#082f44,#083b57);
+            color: #d0f7ff;
+            margin-left: auto;
+        }
+
+        .bot .bubble {
+            background: linear-gradient(90deg,#101827,#16202a);
+            color: #e6eef6;
+        }
+
+        .meta {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 6px;
+        }
+
+        footer {
+            margin-top: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app" role="application" aria-label="Meseca voice assistant">
+        <header>
+            <h1>Meseca — Voice AI (Web-ready)</h1>
+            <div style="font-size:13px;color:var(--muted)">Local / Self-hosted</div>
+        </header>
+
+        <div id="chat" aria-live="polite"></div>
+
+        <div class="controls">
+            <div class="input">
+                <input id="textInput" type="text" placeholder="Type your message or record audio..." />
+                <button id="sendBtn">Send</button>
+            </div>
+            <button id="recordBtn" class="secondary">Record</button>
+            <button id="playBtn" class="secondary" disabled>Play last</button>
+        </div>
+
+        <footer>
+            <div id="status">Ready</div>
+            <div>Ports: Node(5000) • VITS(7000) • Whisper(7001) • Ollama(11434)</div>
+        </footer>
+    </div>
+
+    <script>
+        // Config: adjust to where server.js is hosted
+        const API_BASE = ""; // blank => same origin. If hosting server on different port set e.g. "http://localhost:5000"
+
+        const chatDiv = document.getElementById("chat");
+        const textInput = document.getElementById("textInput");
+        const sendBtn = document.getElementById("sendBtn");
+        const recordBtn = document.getElementById("recordBtn");
+        const statusEl = document.getElementById("status");
+        const playBtn = document.getElementById("playBtn");
+
+        let lastAudioUrl = null;
+        function appendMessage(who, text, cls = "bot") {
+            const wrap = document.createElement("div");
+            wrap.className = `msg ${cls}`;
+            const bubble = document.createElement("div");
+            bubble.className = "bubble";
+            bubble.innerText = text;
+            wrap.appendChild(bubble);
+            chatDiv.appendChild(wrap);
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }
+
+        // text flow
+        async function sendText() {
+            const message = textInput.value.trim();
+            if (!message) return;
+            appendMessage("You", message, "user");
+            textInput.value = "";
+            setStatus("Sending to chat...");
+            sendBtn.disabled = true;
+            try {
+                const resp = await fetch(`${API_BASE}/api/chat`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message })
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ error: "unknown" }));
+                    appendMessage("System", `Chat error: ${err.error || resp.status}`, "bot");
+                    setStatus("Error");
+                    return;
+                }
+                const data = await resp.json();
+                appendMessage("Meseca", data.reply || "[no reply]", "bot");
+                setStatus("Generating audio...");
+                // request tts
+                const ttsResp = await fetch(`${API_BASE}/api/tts`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: data.reply || "" })
+                });
+
+                if (!ttsResp.ok) {
+                    appendMessage("System", `TTS error: ${ttsResp.status}`, "bot");
+                    setStatus("TTS error");
+                    return;
+                }
+
+                const blob = await ttsResp.blob();
+                if (lastAudioUrl) URL.revokeObjectURL(lastAudioUrl);
+                lastAudioUrl = URL.createObjectURL(blob);
+                playBtn.disabled = false;
+
+                // auto play
+                playAudio(lastAudioUrl);
+
+                setStatus("Ready");
+            } catch (e) {
+                console.error(e);
+                appendMessage("System", `Request failed: ${e.message}`, "bot");
+                setStatus("Error");
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        function setStatus(t) { statusEl.innerText = t; }
+
+        sendBtn.addEventListener("click", sendText);
+        textInput.addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
+
+        // playback helper
+        let audioEl = null;
+        function playAudio(url) {
+            if (audioEl) {
+                audioEl.pause();
+                audioEl.remove();
+            }
+            audioEl = document.createElement("audio");
+            audioEl.controls = true;
+            audioEl.src = url;
+            chatDiv.appendChild(audioEl);
+            audioEl.play().catch(() => { });
+        }
+        playBtn.addEventListener("click", () => { if (lastAudioUrl) playAudio(lastAudioUrl); });
+
+        // Recording (MediaRecorder) -> upload to /api/whisper
+        let recorder = null;
+        let chunks = [];
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                recorder = new MediaRecorder(stream);
+                chunks = [];
+                recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+                recorder.onstop = async () => {
+                    const blob = new Blob(chunks, { type: 'audio/webm' });
+                    appendMessage("You", "[voice message]", "user");
+                    setStatus("Uploading to Whisper...");
+                    const form = new FormData();
+                    form.append("file", blob, "record.webm");
+                    try {
+                        const wResp = await fetch(`${API_BASE}/api/whisper`, { method: "POST", body: form });
+                        if (!wResp.ok) {
+                            const err = await wResp.json().catch(() => ({ error: "unknown" }));
+                            appendMessage("System", `Whisper error: ${err.error || wResp.status}`, "bot");
+                            setStatus("Error");
+                            return;
+                        }
+                        const json = await wResp.json();
+                        const recognized = json.text || "";
+                        appendMessage("System", `Transcribed: ${recognized}`, "bot");
+                        // send to chat
+                        textInput.value = recognized;
+                        await sendText();
+                    } catch (e) {
+                        console.error("Whisper upload failed", e);
+                        appendMessage("System", `Whisper upload failed: ${e.message}`, "bot");
+                        setStatus("Error");
+                    }
+                };
+                recorder.start();
+                setStatus("Recording...");
+                recordBtn.innerText = "Stop";
+            } catch (e) {
+                appendMessage("System", "Microphone access denied or not available.", "bot");
+                setStatus("Error");
+            }
+        }
+
+        function stopRecording() {
+            if (recorder && recorder.state !== "inactive") {
+                recorder.stop();
+                setStatus("Processing...");
+                recordBtn.innerText = "Record";
+                recorder = null;
+            }
+        }
+
+        recordBtn.addEventListener("click", () => {
+            if (!recorder) startRecording(); else stopRecording();
+        });
+
+        // initial welcome
+        appendMessage("System", "Welcome! Click Record to speak, or type and Send. Make sure server is running.", "bot");
+    </script>
+</body>
+</html>
